@@ -1,10 +1,10 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { 
   User, Users, Plus, LogOut, Search, 
-  Check, X, Banknote, ArrowUpRight, ArrowDownLeft, Home, UserPlus, HandCoins, History, Filter, ChevronLeft, Wallet
+  Check, X, Banknote, ArrowUpRight, ArrowDownLeft, Home, UserPlus, HandCoins, History, Filter, ChevronLeft, Wallet, ShieldCheck
 } from 'lucide-react';
 
-// --- FIREBASE SETUP (All in one file) ---
+// --- FIREBASE SETUP ---
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, query, orderBy, where } from 'firebase/firestore';
 
@@ -21,6 +21,9 @@ const firebaseConfig = {
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+
+// --- ADMIN CONFIG ---
+const ADMIN_MOBILE = '0771724915'; // මෙම අංකය ඇඩ්මින් ලෙස ක්‍රියා කරයි
 
 // --- CSS Styles ---
 const styles = `
@@ -95,6 +98,7 @@ const styles = `
 
 export default function App() {
   const [user, setUser] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false); // Admin State
   const [view, setView] = useState('auth'); 
   
   // Real-time Data States
@@ -117,14 +121,57 @@ export default function App() {
   const [historyFilter, setHistoryFilter] = useState('all'); 
   const [viewDetails, setViewDetails] = useState(null);
 
-  // --- FIREBASE REALTIME LISTENERS ---
+  // Admin Inputs
+  const [adminUserMobile, setAdminUserMobile] = useState('');
+  const [adminUserName, setAdminUserName] = useState('');
+
+  // --- FIREBASE REALTIME LISTENERS & NOTIFICATIONS ---
   useEffect(() => {
+    // Other listeners (Users, Friends, Groups)
     const unsubUsers = onSnapshot(collection(db, "users"), (s) => setUsers(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const unsubFriends = onSnapshot(collection(db, "friendships"), (s) => setFriendships(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const unsubGroups = onSnapshot(collection(db, "groups"), (s) => setGroups(s.docs.map(d => ({ id: d.id, ...d.data() }))));
-    const unsubExpenses = onSnapshot(collection(db, "expenses"), (s) => setExpenses(s.docs.map(d => ({ id: d.id, ...d.data() }))));
+    
+    // Expenses Listener with Notification Logic
+    let isInitial = true;
+    const unsubExpenses = onSnapshot(collection(db, "expenses"), (snapshot) => {
+      const loadedExpenses = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      setExpenses(loadedExpenses);
+
+      // Notification Logic
+      if (!isInitial && user) {
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === "added") {
+            const data = change.doc.data();
+            
+            // Check if I am involved AND I am NOT the payer
+            if (data.involvedUsers && data.involvedUsers.includes(user.id) && data.payerId !== user.id) {
+               const payer = users.find(u => u.id === data.payerId);
+               const payerName = payer ? payer.name : "Someone";
+               
+               let title = "New Transaction";
+               let body = "";
+               
+               if (data.isSettlement) {
+                 title = "💰 මුදල් ලැබුණා!";
+                 body = `${payerName} විසින් ඔබට රු. ${data.amount} ගෙවන ලදී.`;
+               } else {
+                 title = "📝 අලුත් වියදමක්";
+                 body = `${payerName} විසින් '${data.description}' (රු. ${data.amount}) එකතු කරන ලදී.`;
+               }
+
+               if (Notification.permission === "granted") {
+                 new Notification(title, { body, icon: '/vite.svg' });
+               }
+            }
+          }
+        });
+      }
+      isInitial = false;
+    });
+
     return () => { unsubUsers(); unsubFriends(); unsubGroups(); unsubExpenses(); };
-  }, []);
+  }, [user, users]); // Re-run if user/users change
 
   // --- Calculations ---
   const balances = useMemo(() => {
@@ -190,7 +237,15 @@ export default function App() {
   // --- Functions ---
   const handleLogin = async () => {
     if (!mobileInput) return;
+    
+    // Request Notification Permission
+    if ("Notification" in window) {
+      Notification.requestPermission();
+    }
+    
+    // Check if user exists
     let currentUser = users.find(u => u.mobile === mobileInput);
+    
     if (!currentUser) {
       if (!nameInput) return alert('කරුණාකර ඔබේ නම ඇතුලත් කරන්න');
       const newUserId = `u${Date.now()}`;
@@ -198,22 +253,37 @@ export default function App() {
       await setDoc(doc(db, "users", newUserId), currentUser);
       currentUser.id = newUserId;
     }
+    
     localStorage.setItem('podu_current_user_mobile', mobileInput);
     setUser(currentUser);
+    
+    // Check Admin Status
+    if (mobileInput === ADMIN_MOBILE) {
+      setIsAdmin(true);
+    } else {
+      setIsAdmin(false);
+    }
+
     setView('dashboard');
   };
 
+  // Auto Login
   useEffect(() => {
     const savedMobile = localStorage.getItem('podu_current_user_mobile');
     if (savedMobile && users.length > 0 && !user) {
       const foundUser = users.find(u => u.mobile === savedMobile);
-      if (foundUser) setUser(foundUser);
+      if (foundUser) {
+        setUser(foundUser);
+        if (savedMobile === ADMIN_MOBILE) setIsAdmin(true);
+        setView('dashboard');
+      }
     }
   }, [users]);
 
   const logout = () => {
     localStorage.removeItem('podu_current_user_mobile');
     setUser(null);
+    setIsAdmin(false);
     setView('auth');
   };
 
@@ -250,6 +320,27 @@ export default function App() {
      else { payerId = user.id; involvedUsers = [settleUser.id]; }
      await addDoc(collection(db, "expenses"), { amount: amt, description: "Settlement", payerId: payerId, involvedUsers: involvedUsers, date: new Date().toISOString(), isSettlement: true });
      setSettleUser(null); alert('Settled!');
+  };
+
+  // --- Admin Functions ---
+  const handleAdminCreateUser = async () => {
+    if (!adminUserName || !adminUserMobile) return alert("නම සහ දුරකථන අංකය ඇතුලත් කරන්න");
+    
+    // Check if mobile already exists
+    const existing = users.find(u => u.mobile === adminUserMobile);
+    if (existing) return alert("මෙම දුරකථන අංකය දැනටමත් ලියාපදිංචි වී ඇත.");
+
+    const newUserId = `u${Date.now()}`;
+    const newUser = { 
+      name: adminUserName, 
+      mobile: adminUserMobile, 
+      createdAt: new Date().toISOString() 
+    };
+    
+    await setDoc(doc(db, "users", newUserId), newUser);
+    setAdminUserName('');
+    setAdminUserMobile('');
+    alert(`සාමාජිකයා එකතු කරන ලදී: ${adminUserName}`);
   };
 
   const getMyFriends = () => friendships.filter(f => f.userId === user.id || f.friendId === user.id).map(f => {
@@ -355,7 +446,13 @@ export default function App() {
               {viewDetails ? (
                 <div style={{display:'flex', alignItems:'center'}}><button onClick={() => setViewDetails(null)} className="back-btn"><ChevronLeft size={24}/></button><h1 className="font-bold">{viewDetails.data.name}</h1></div>
               ) : (
-                <div><h1 className="font-bold">Hi, {user.name}</h1><span className="text-muted">{user.mobile}</span></div>
+                <div>
+                  <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
+                    <h1 className="font-bold">Hi, {user.name}</h1>
+                    {isAdmin && <span style={{backgroundColor:'#e0f2fe', color:'#0284c7', padding:'2px 6px', borderRadius:'4px', fontSize:'10px', fontWeight:'bold'}}>ADMIN</span>}
+                  </div>
+                  <span className="text-muted">{user.mobile}</span>
+                </div>
               )}
               {!viewDetails && <button onClick={logout} className="btn-icon"><LogOut size={20}/></button>}
             </header>
@@ -410,35 +507,41 @@ export default function App() {
                            <div><p className="label-pay">To Pay <ArrowUpRight size={12}/></p><p className="amount" style={{color: '#fbbf24'}}>LKR {totalPayable.toFixed(0)}</p></div>
                         </div>
                       </div>
-                      
                       {balances.some(b => b.type === 'pay') && (
-                        <div>
-                          <div className="section-title">You Owe</div>
-                          {balances.filter(b => b.type === 'pay').map((b, i) => (
-                            <div key={i} className="list-item" onClick={() => setViewDetails({ type: 'friend', data: b.otherUser })}>
-                              <div className="user-info"><div className="avatar" style={{backgroundColor: '#fff7ed', color:'#c2410c'}}>{b.otherUser?.name[0]}</div><p className="font-bold">{b.otherUser?.name}</p></div>
-                              <div style={{textAlign:'right'}}><p className="text-red">LKR {Math.abs(b.amount).toFixed(0)}</p><button onClick={(e) => openSettleModal(e, b)} className="btn-outline" style={{marginTop: '4px', fontSize:'10px', padding: '4px 8px'}}>Settle</button></div>
-                            </div>
-                          ))}
-                        </div>
+                        <div><div className="section-title">You Owe</div>{balances.filter(b => b.type === 'pay').map((b, i) => (<div key={i} className="list-item" onClick={() => setViewDetails({ type: 'friend', data: b.otherUser })}><div className="user-info"><div className="avatar" style={{backgroundColor: '#fff7ed', color:'#c2410c'}}>{b.otherUser?.name[0]}</div><p className="font-bold">{b.otherUser?.name}</p></div><div style={{textAlign:'right'}}><p className="text-red">LKR {Math.abs(b.amount).toFixed(0)}</p><button onClick={(e) => openSettleModal(e, b)} className="btn-outline" style={{marginTop: '4px', fontSize:'10px', padding: '4px 8px'}}>Settle</button></div></div>))}</div>
                       )}
                       {balances.some(b => b.type === 'receive') && (
-                        <div>
-                          <div className="section-title">Owed to You</div>
-                          {balances.filter(b => b.type === 'receive').map((b, i) => (
-                            <div key={i} className="list-item" onClick={() => setViewDetails({ type: 'friend', data: b.otherUser })}>
-                              <div className="user-info"><div className="avatar" style={{backgroundColor: '#ecfdf5', color:'#047857'}}>{b.otherUser?.name[0]}</div><p className="font-bold">{b.otherUser?.name}</p></div>
-                              <div style={{textAlign:'right'}}><p className="text-green">LKR {Math.abs(b.amount).toFixed(0)}</p><button onClick={(e) => openSettleModal(e, b)} className="btn-outline" style={{marginTop: '4px', fontSize:'10px', padding: '4px 8px'}}>Settle</button></div>
-                            </div>
-                          ))}
-                        </div>
+                        <div><div className="section-title">Owed to You</div>{balances.filter(b => b.type === 'receive').map((b, i) => (<div key={i} className="list-item" onClick={() => setViewDetails({ type: 'friend', data: b.otherUser })}><div className="user-info"><div className="avatar" style={{backgroundColor: '#ecfdf5', color:'#047857'}}>{b.otherUser?.name[0]}</div><p className="font-bold">{b.otherUser?.name}</p></div><div style={{textAlign:'right'}}><p className="text-green">LKR {Math.abs(b.amount).toFixed(0)}</p><button onClick={(e) => openSettleModal(e, b)} className="btn-outline" style={{marginTop: '4px', fontSize:'10px', padding: '4px 8px'}}>Settle</button></div></div>))}</div>
                       )}
                       {balances.length === 0 && <div style={{textAlign:'center', padding:'40px 0', color:'#9ca3af'}}><Wallet size={48} style={{margin:'0 auto 10px', opacity:0.5}}/><p>No outstanding balances.</p></div>}
-                      
                       <div className="section-title" style={{marginTop:'30px'}}>Recent Activity</div>
                       {expenses.length > 0 ? expenses.filter(exp => exp.involvedUsers && exp.involvedUsers.includes(user.id) || exp.payerId === user.id).sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 3).map(exp => renderTransactionItem(exp)) : <p className="text-muted text-center" style={{fontSize:'12px'}}>No recent activity.</p>}
                       <div style={{height:'20px'}}></div>
                     </>
+                  )}
+
+                  {view === 'admin_panel' && (
+                    <div style={{marginTop: '20px'}}>
+                      <h2 className="title" style={{marginBottom: '20px'}}>පරිපාලක මණ්ඩලය (Admin)</h2>
+                      <div style={{backgroundColor:'white', padding:'20px', borderRadius:'16px', border:'1px solid #d1d5db'}}>
+                        <h3 style={{fontSize:'16px', fontWeight:'bold', marginBottom:'15px', color:'#059669'}}>නව සාමාජිකයෙක් එකතු කරන්න</h3>
+                        <label className="text-muted">නම (Name)</label>
+                        <input type="text" className="input-field" value={adminUserName} onChange={(e) => setAdminUserName(e.target.value)} placeholder="User Name" />
+                        <label className="text-muted">දුරකථන අංකය (Mobile)</label>
+                        <input type="tel" className="input-field" value={adminUserMobile} onChange={(e) => setAdminUserMobile(e.target.value)} placeholder="07xxxxxxxx" />
+                        <button onClick={handleAdminCreateUser} className="btn-primary" style={{marginTop:'10px'}}>Create User</button>
+                      </div>
+                      
+                      <div style={{marginTop:'30px'}}>
+                        <h3 className="section-title">සියලුම සාමාජිකයන් ({users.length})</h3>
+                        {users.map(u => (
+                          <div key={u.id} style={{padding:'10px', borderBottom:'1px solid #eee', display:'flex', justifyContent:'space-between'}}>
+                            <span style={{fontWeight:'bold'}}>{u.name}</span>
+                            <span style={{color:'#6b7280', fontSize:'12px'}}>{u.mobile}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   )}
 
                   {view === 'add' && (
@@ -530,7 +633,12 @@ export default function App() {
                 <button onClick={() => setView('groups')} className={`nav-item ${view==='groups'?'active':''}`}><Users size={24}/><span className="nav-text">Groups</span></button>
                 <button onClick={() => setView('add')} className="fab-btn"><Plus size={28}/></button>
                 <button onClick={() => setView('history')} className={`nav-item ${view==='history'?'active':''}`}><History size={24}/><span className="nav-text">History</span></button>
-                <button onClick={() => setView('friends')} className={`nav-item ${view==='friends'?'active':''}`}><User size={24}/><span className="nav-text">Friends</span></button>
+                
+                {isAdmin ? (
+                  <button onClick={() => setView('admin_panel')} className={`nav-item ${view==='admin_panel'?'active':''}`}><ShieldCheck size={24}/><span className="nav-text">Admin</span></button>
+                ) : (
+                  <button onClick={() => setView('friends')} className={`nav-item ${view==='friends'?'active':''}`}><User size={24}/><span className="nav-text">Friends</span></button>
+                )}
               </nav>
             )}
 
