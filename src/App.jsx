@@ -6,7 +6,8 @@ import {
 
 // --- FIREBASE SETUP ---
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, query, orderBy, where } from 'firebase/firestore';
+// Updated imports to include 'getDocs' for direct DB check
+import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, query, orderBy, where, getDocs } from 'firebase/firestore';
 
 // TODO: ඔබේ Firebase Console එකෙන් ලැබෙන Config එක මෙතැනට Paste කරන්න
 const firebaseConfig = {
@@ -243,9 +244,24 @@ export default function App() {
       Notification.requestPermission();
     }
     
-    // Check if user exists
+    // 1. Check local state first
     let currentUser = users.find(u => u.mobile === mobileInput);
     
+    // 2. If not found locally, check FireStore directly (Fix for new device/clear cache)
+    if (!currentUser) {
+      try {
+        const q = query(collection(db, "users"), where("mobile", "==", mobileInput));
+        const querySnapshot = await getDocs(q);
+        if (!querySnapshot.empty) {
+          const userDoc = querySnapshot.docs[0];
+          currentUser = { id: userDoc.id, ...userDoc.data() };
+        }
+      } catch (e) {
+        console.error("Error fetching user:", e);
+      }
+    }
+
+    // 3. If still not found, create new user
     if (!currentUser) {
       if (!nameInput) return alert('කරුණාකර ඔබේ නම ඇතුලත් කරන්න');
       const newUserId = `u${Date.now()}`;
