@@ -1,12 +1,12 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { 
   User, Users, Plus, LogOut, Search, 
-  Check, X, Banknote, ArrowUpRight, ArrowDownLeft, Home, UserPlus, HandCoins, History, Filter, ChevronLeft, Wallet, ShieldCheck
+  Check, X, Banknote, ArrowUpRight, ArrowDownLeft, Home, UserPlus, HandCoins, History, Filter, ChevronLeft, Wallet, ShieldCheck, Bell, Receipt
 } from 'lucide-react';
 
 // --- FIREBASE SETUP ---
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, query, orderBy, where, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, query, orderBy, where, getDocs, updateDoc } from 'firebase/firestore';
 
 // TODO: ඔබේ Firebase Console එකෙන් ලැබෙන Config එක මෙතැනට Paste කරන්න
 const firebaseConfig = {
@@ -36,7 +36,7 @@ const styles = `
   .btn-primary { width: 100%; background-color: #059669; color: white; padding: 12px; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; transition: background-color 0.2s; }
   .btn-primary:hover { background-color: #047857; }
   .header { background-color: white; padding: 16px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; z-index: 10; }
-  .btn-icon { background: none; border: none; cursor: pointer; color: #6b7280; }
+  .btn-icon { background: none; border: none; cursor: pointer; color: #6b7280; position: relative; }
   .main-content { padding: 16px; }
   .balance-card { background: linear-gradient(135deg, #1f2937 0%, #111827 100%); color: white; padding: 24px; border-radius: 20px; margin-bottom: 24px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
   .balance-total { text-align: center; margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); }
@@ -94,21 +94,25 @@ const styles = `
   .nav-item.active { color: #059669; }
   .nav-text { font-size: 10px; margin-top: 4px; }
   .fab-btn { background-color: #059669; color: white; width: 56px; height: 56px; border-radius: 50%; border: none; position: relative; top: -24px; box-shadow: 0 4px 10px rgba(5, 150, 105, 0.4); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  
+  /* Notification Badge */
+  .badge { position: absolute; top: -2px; right: -2px; background-color: #ef4444; color: white; border-radius: 50%; width: 16px; height: 16px; font-size: 10px; display: flex; align-items: center; justify-content: center; border: 2px solid white; }
+  .notification-item { background: white; padding: 12px; border-radius: 12px; border: 1px solid #f3f4f6; margin-bottom: 8px; display: flex; gap: 12px; align-items: center; position: relative; }
+  .notification-item.unread { border-left: 4px solid #059669; background-color: #f0fdf4; }
+  .notif-icon { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 `;
-
-// --- Mock Data ---
-const INITIAL_USERS = [];
 
 export default function App() {
   const [user, setUser] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [view, setView] = useState('auth'); 
   
-  // Data
+  // Real-time Data
   const [users, setUsers] = useState([]);
   const [friendships, setFriendships] = useState([]);
   const [groups, setGroups] = useState([]);
   const [expenses, setExpenses] = useState([]);
+  const [notifications, setNotifications] = useState([]);
   
   // Inputs
   const [mobileInput, setMobileInput] = useState('');
@@ -125,6 +129,9 @@ export default function App() {
   const [viewDetails, setViewDetails] = useState(null);
   const [selectedIdsForExpense, setSelectedIdsForExpense] = useState([]);
 
+  // Notification Filter State
+  const [notifFilter, setNotifFilter] = useState('all');
+
   // Admin
   const [adminUserMobile, setAdminUserMobile] = useState('');
   const [adminUserName, setAdminUserName] = useState('');
@@ -134,11 +141,22 @@ export default function App() {
     const unsubUsers = onSnapshot(collection(db, "users"), (s) => setUsers(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const unsubFriends = onSnapshot(collection(db, "friendships"), (s) => setFriendships(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const unsubGroups = onSnapshot(collection(db, "groups"), (s) => setGroups(s.docs.map(d => ({ id: d.id, ...d.data() }))));
-    const unsubExpenses = onSnapshot(collection(db, "expenses"), (snapshot) => {
-      setExpenses(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    const unsubExpenses = onSnapshot(collection(db, "expenses"), (s) => setExpenses(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     return () => { unsubUsers(); unsubFriends(); unsubGroups(); unsubExpenses(); };
   }, []);
+
+  // Notifications Listener (User Specific)
+  useEffect(() => {
+    if(!user) return;
+    const unsubNotifs = onSnapshot(collection(db, "notifications"), (s) => {
+        const myNotifs = s.docs
+            .map(d => ({ id: d.id, ...d.data() }))
+            .filter(n => n.recipientId === user.id)
+            .sort((a, b) => new Date(b.date) - new Date(a.date));
+        setNotifications(myNotifs);
+    });
+    return () => unsubNotifs();
+  }, [user]);
 
   // --- Helpers ---
   const getMyFriends = () => friendships
@@ -149,6 +167,8 @@ export default function App() {
     })
     .filter(u => u); 
 
+  const unreadCount = notifications.filter(n => !n.read).length;
+
   // --- Calculations ---
   const balances = useMemo(() => {
     if (!user) return [];
@@ -158,28 +178,15 @@ export default function App() {
       const splitAmount = exp.amount / exp.involvedUsers.length;
       if (exp.isSettlement) {
          if (exp.payerId === user.id) {
-            exp.involvedUsers.forEach(uid => {
-               if(uid === user.id) return;
-               if(!acc[uid]) acc[uid] = { toReceive: 0, toPay: 0 };
-               acc[uid].toPay -= exp.amount; 
-            });
+            exp.involvedUsers.forEach(uid => { if(uid !== user.id) { if(!acc[uid]) acc[uid] = { toReceive: 0, toPay: 0 }; acc[uid].toPay -= exp.amount; } });
          } else if (exp.involvedUsers.includes(user.id)) {
-            const payer = exp.payerId;
-            if(!acc[payer]) acc[payer] = { toReceive: 0, toPay: 0 };
-            acc[payer].toReceive -= exp.amount;
+            const payer = exp.payerId; if(!acc[payer]) acc[payer] = { toReceive: 0, toPay: 0 }; acc[payer].toReceive -= exp.amount;
          }
       } else {
          if (exp.payerId === user.id) {
-            exp.involvedUsers.forEach(uid => {
-               if (uid !== user.id) {
-                  if(!acc[uid]) acc[uid] = { toReceive: 0, toPay: 0 };
-                  acc[uid].toReceive += splitAmount;
-               }
-            });
+            exp.involvedUsers.forEach(uid => { if (uid !== user.id) { if(!acc[uid]) acc[uid] = { toReceive: 0, toPay: 0 }; acc[uid].toReceive += splitAmount; } });
          } else if (exp.involvedUsers.includes(user.id)) {
-            const payer = exp.payerId;
-            if(!acc[payer]) acc[payer] = { toReceive: 0, toPay: 0 };
-            acc[payer].toPay += splitAmount;
+            const payer = exp.payerId; if(!acc[payer]) acc[payer] = { toReceive: 0, toPay: 0 }; acc[payer].toPay += splitAmount;
          }
       }
     });
@@ -188,14 +195,10 @@ export default function App() {
     Object.keys(acc).forEach(uid => {
        const u = users.find(x => x.id === uid);
        if(!u) return;
-       let r = acc[uid].toReceive;
-       let p = acc[uid].toPay;
-       if (p < 0) { r += Math.abs(p); p = 0; }
-       if (r < 0) { p += Math.abs(r); r = 0; }
-       const finalReceive = Math.round(r * 100) / 100;
-       const finalPay = Math.round(p * 100) / 100;
-       if (finalReceive > 1) result.push({ otherUser: u, amount: finalReceive, type: 'receive' });
-       if (finalPay > 1) result.push({ otherUser: u, amount: finalPay, type: 'pay' });
+       let r = acc[uid].toReceive; let p = acc[uid].toPay;
+       if (p < 0) { r += Math.abs(p); p = 0; } if (r < 0) { p += Math.abs(r); r = 0; }
+       if (r > 1) result.push({ otherUser: u, amount: r, type: 'receive' });
+       if (p > 1) result.push({ otherUser: u, amount: p, type: 'pay' });
     });
     return result.sort((a, b) => b.amount - a.amount);
   }, [expenses, user, users]);
@@ -207,9 +210,9 @@ export default function App() {
   // --- Functions ---
   const handleLogin = async () => {
     if (!mobileInput) return;
-    if ("Notification" in window) Notification.requestPermission();
     
     let currentUser = users.find(u => u.mobile === mobileInput);
+    
     if (!currentUser) {
       try {
         const q = query(collection(db, "users"), where("mobile", "==", mobileInput));
@@ -220,6 +223,7 @@ export default function App() {
         }
       } catch (e) { console.error(e); }
     }
+
     if (!currentUser) {
       if (!nameInput) return alert('කරුණාකර ඔබේ නම ඇතුලත් කරන්න');
       const newUserId = `u${Date.now()}`;
@@ -227,6 +231,7 @@ export default function App() {
       await setDoc(doc(db, "users", newUserId), currentUser);
       currentUser.id = newUserId;
     }
+    
     localStorage.setItem('podu_current_user_mobile', mobileInput);
     setUser(currentUser);
     if (mobileInput === ADMIN_MOBILE) setIsAdmin(true); else setIsAdmin(false);
@@ -248,17 +253,47 @@ export default function App() {
     const exists = friendships.find(f => (f.userId === user.id && f.friendId === friendId) || (f.userId === friendId && f.friendId === user.id));
     if(exists) return alert('Already added.');
     await addDoc(collection(db, "friendships"), { userId: user.id, friendId: friendId, status: 'accepted', createdAt: new Date().toISOString() });
+    
+    // Notification
+    await addDoc(collection(db, "notifications"), {
+        recipientId: friendId, senderId: user.id, type: 'friend',
+        message: `${user.name} added you as a friend!`,
+        date: new Date().toISOString(), read: false
+    });
+
     setSearchResult(null); setSearchQuery(''); alert('Added!');
   };
 
   const handleCreateGroup = async () => {
     if (!newGroupName || selectedFriendsForGroup.length === 0) return alert('Fill all details');
     await addDoc(collection(db, "groups"), { name: newGroupName, createdBy: user.id, members: [user.id, ...selectedFriendsForGroup], createdAt: new Date().toISOString() });
+    
+    // Notifications
+    selectedFriendsForGroup.forEach(async (uid) => {
+        await addDoc(collection(db, "notifications"), {
+            recipientId: uid, senderId: user.id, type: 'group',
+            message: `${user.name} added you to group "${newGroupName}"`,
+            date: new Date().toISOString(), read: false
+        });
+    });
+
     setNewGroupName(''); setSelectedFriendsForGroup([]); setView('groups'); alert('Group Created!');
   };
 
   const saveExpense = async (amt, desc, involvedMembers, specificPayerId, groupId = null) => {
       await addDoc(collection(db, "expenses"), { amount: amt, description: desc, payerId: specificPayerId || user.id, involvedUsers: involvedMembers, groupId: groupId, date: new Date().toISOString() });
+      
+      // Notifications
+      involvedMembers.forEach(async (uid) => {
+        if (uid !== (specificPayerId || user.id)) { 
+          await addDoc(collection(db, "notifications"), {
+             recipientId: uid, senderId: user.id, type: 'expense',
+             message: `Added expense: ${desc} (LKR ${amt})`,
+             amount: amt, date: new Date().toISOString(), read: false
+          });
+        }
+      });
+
       setIncludeMe(true); setPaidByMe(true); setSelectedIdsForExpense([]); setView('dashboard');
   };
 
@@ -266,10 +301,20 @@ export default function App() {
      if (!settleUser) return;
      const amt = parseFloat(document.getElementById('settleAmount').value);
      if (!amt || amt <= 0) return alert('Invalid amount');
-     let payerId, involvedUsers;
-     if (settleUser.type === 'receive') { payerId = settleUser.id; involvedUsers = [user.id]; } 
-     else { payerId = user.id; involvedUsers = [settleUser.id]; }
+     let payerId, involvedUsers, recipientId;
+     
+     if (settleUser.type === 'receive') { payerId = settleUser.id; involvedUsers = [user.id]; recipientId = user.id; } 
+     else { payerId = user.id; involvedUsers = [settleUser.id]; recipientId = settleUser.id; }
+     
      await addDoc(collection(db, "expenses"), { amount: amt, description: "Settlement", payerId: payerId, involvedUsers: involvedUsers, date: new Date().toISOString(), isSettlement: true });
+
+     // Notification
+     await addDoc(collection(db, "notifications"), {
+         recipientId: recipientId, senderId: user.id, type: 'settlement',
+         message: `Paid you LKR ${amt} (Settlement)`,
+         amount: amt, date: new Date().toISOString(), read: false
+     });
+
      setSettleUser(null); alert('Settled!');
   };
 
@@ -277,10 +322,26 @@ export default function App() {
     if (!adminUserName || !adminUserMobile) return alert("Enter details");
     const existing = users.find(u => u.mobile === adminUserMobile);
     if (existing) return alert("Mobile exists");
+    
     const newUserId = `u${Date.now()}`;
     await setDoc(doc(db, "users", newUserId), { name: adminUserName, mobile: adminUserMobile, createdAt: new Date().toISOString() });
     await addDoc(collection(db, "friendships"), { userId: user.id, friendId: newUserId, status: 'accepted', createdAt: new Date().toISOString() });
-    setAdminUserName(''); setAdminUserMobile(''); alert('User created & added as friend!');
+    
+    // Notification for new user
+    await addDoc(collection(db, "notifications"), {
+        recipientId: newUserId, senderId: user.id, type: 'system',
+        message: `Welcome to Loan Balance! Your account was created by Admin.`,
+        date: new Date().toISOString(), read: false
+    });
+
+    setAdminUserName(''); setAdminUserMobile(''); 
+    alert('User created & added as friend!');
+  };
+
+  const markAllRead = () => {
+      notifications.forEach(async (n) => {
+          if (!n.read) await updateDoc(doc(db, "notifications", n.id), { read: true });
+      });
   };
 
   const toggleFriendSelection = (id) => selectedFriendsForGroup.includes(id) ? setSelectedFriendsForGroup(selectedFriendsForGroup.filter(i => i !== id)) : setSelectedFriendsForGroup([...selectedFriendsForGroup, id]);
@@ -377,7 +438,16 @@ export default function App() {
                   <span className="text-muted">{user.mobile}</span>
                 </div>
               )}
-              {!viewDetails && (<div style={{display:'flex', gap:'10px'}}>{isAdmin && <button onClick={() => setView('admin_panel')} className="btn-icon" style={{color:'#059669'}}><ShieldCheck size={24}/></button>}<button onClick={logout} className="btn-icon"><LogOut size={24}/></button></div>)}
+              {!viewDetails && (
+                <div style={{display:'flex', gap:'15px', alignItems:'center'}}>
+                    <div style={{position:'relative', cursor:'pointer'}} onClick={() => { setView('notifications'); markAllRead(); }}>
+                        <Bell size={24} color={view === 'notifications' ? "#059669" : "#6b7280"} />
+                        {unreadCount > 0 && <div className="badge">{unreadCount}</div>}
+                    </div>
+                    {isAdmin && <button onClick={() => setView('admin_panel')} className="btn-icon" style={{color:'#059669'}}><ShieldCheck size={24}/></button>}
+                    <button onClick={logout} className="btn-icon"><LogOut size={24}/></button>
+                </div>
+              )}
             </header>
             
             <main className="main-content">
@@ -466,6 +536,30 @@ export default function App() {
 
                   {view === 'history' && (
                     <div style={{marginTop: '20px'}}><h2 className="title" style={{marginBottom: '20px'}}>History</h2><div className="tab-container" style={{marginBottom:'20px'}}><button className={`tab-btn ${historyFilter === 'all' ? 'active' : ''}`} onClick={() => setHistoryFilter('all')}>All</button><button className={`tab-btn ${historyFilter === 'expenses' ? 'active' : ''}`} onClick={() => setHistoryFilter('expenses')}>Expenses</button><button className={`tab-btn ${historyFilter === 'settlements' ? 'active' : ''}`} onClick={() => setHistoryFilter('settlements')}>Settlements</button></div>{Object.keys(getFilteredHistory()).map(month => <div key={month}><div className="month-header">{month}</div>{getFilteredHistory()[month].map(exp => renderTransactionItem(exp))}</div>)}</div>
+                  )}
+
+                  {view === 'notifications' && (
+                    <div style={{marginTop: '20px'}}>
+                        <h2 className="title" style={{marginBottom: '20px'}}>Notifications</h2>
+                        <div className="tab-container" style={{marginBottom:'20px'}}>
+                            <button className={`tab-btn ${notifFilter === 'all' ? 'active' : ''}`} onClick={() => setNotifFilter('all')}>All</button>
+                            <button className={`tab-btn ${notifFilter === 'expense' ? 'active' : ''}`} onClick={() => setNotifFilter('expense')}>Expenses</button>
+                            <button className={`tab-btn ${notifFilter === 'settlement' ? 'active' : ''}`} onClick={() => setNotifFilter('settlement')}>Received</button>
+                        </div>
+                        {notifications.filter(n => notifFilter === 'all' || n.type === notifFilter).length === 0 ? <p className="text-muted text-center">No notifications</p> : 
+                            notifications.filter(n => notifFilter === 'all' || n.type === notifFilter).map(n => (
+                                <div key={n.id} className={`notification-item ${!n.read ? 'unread' : ''}`}>
+                                    <div className="notif-icon" style={{backgroundColor: n.type === 'settlement' ? '#ecfdf5' : '#fff7ed'}}>
+                                        {n.type === 'settlement' ? <Banknote size={16} color="#059669"/> : <Receipt size={16} color="#ea580c"/>}
+                                    </div>
+                                    <div>
+                                        <p style={{fontSize:'12px', margin:0, color:'#374151'}}>{n.message}</p>
+                                        <p style={{fontSize:'10px', margin:'2px 0 0 0', color:'#9ca3af'}}>{new Date(n.date).toLocaleString()}</p>
+                                    </div>
+                                </div>
+                            ))
+                        }
+                    </div>
                   )}
                 </>
               )}
